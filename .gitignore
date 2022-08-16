@@ -1,0 +1,6 @@
+keykey.db
+config.js
+node_modules
+*.DS_Store
+*.sql
+._index.js
