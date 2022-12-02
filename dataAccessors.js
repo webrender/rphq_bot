@@ -21,24 +21,12 @@ import {
 } from "./models.js";
 import { LOCALE } from "./config.js";
 
-let characterCache = {};
-let roleplayFilterCache = {};
+let roleplayFilterCache = [];
+let guildInfoCache = {};
 
 // create a row in the roleplay log
 const createRoleplayLog = async (fields) => {
     return RoleplayLog.create(fields);
-};
-
-// find all tupper-esque characters for a user
-const getCharacters = async (message) => {
-    if (!characterCache[message.author.id]) {
-        const characters = await Character.findAll({
-            where: { owner: message.author.id },
-        });
-        characterCache[message.author.id] = characters.map((c) => c.dataValues);
-    }
-
-    return characterCache[message.author.id];
 };
 
 // get config key/value store from DB
@@ -53,7 +41,7 @@ const getCooldown = async (item, userId) => {
 };
 
 // get a leaderboard for a given time period
-const getLeaderboard = async (type, limit = 30) => {
+const getLeaderboard = async (type, guildId, limit = 30) => {
     let start = moment.tz(LOCALE).startOf("day").utc();
     let end = moment.tz(LOCALE).utc();
     switch (type) {
@@ -108,21 +96,24 @@ const getLeaderboard = async (type, limit = 30) => {
             end = moment.tz(LOCALE).subtract(1, "month").endOf("month").utc();
             break;
     }
-
+    const where = {
+        createdAt: {
+            [Sequelize.Op.gt]: start.toDate(),
+            [Sequelize.Op.lt]: end.toDate(),
+        },
+        deletedAt: {
+            [Sequelize.Op.eq]: null,
+        },
+    };
+    if (guildId) {
+        where.guildId = guildId;
+    }
     const leaders = await RoleplayLog.findAll({
         attributes: [
             "userId",
             [sequelize.fn("sum", sequelize.col("length")), "totalLength"],
         ],
-        where: {
-            createdAt: {
-                [Sequelize.Op.gt]: start.toDate(),
-                [Sequelize.Op.lt]: end.toDate(),
-            },
-            deletedAt: {
-                [Sequelize.Op.eq]: null,
-            },
-        },
+        where,
         group: ["userId"],
         order: [[sequelize.fn("sum", sequelize.col("length")), "DESC"]],
         limit,
@@ -177,21 +168,47 @@ const getRoleplayFilters = async () => {
     return roleplayFilterCache;
 };
 
+const createRoleplayFilter = async (fields) => {
+    await RoleplayFilter.create(fields);
+    const roleplayFilters = await RoleplayFilter.findAll();
+    roleplayFilterCache = roleplayFilters.map((f) => f.dataValues);
+    return true;
+};
+
+const removeRoleplayFilter = async (id) => {
+    await RoleplayFilter.destroy({
+        where: {
+            id,
+        },
+    });
+    const roleplayFilters = await RoleplayFilter.findAll();
+    roleplayFilterCache = roleplayFilters.map((f) => f.dataValues);
+    return true;
+};
+
 const getChannelsToCache = async () => {
     const channels = await Action.findAll({
         where: { actionType: "messageReactionAdd" },
-        include: ChannelAction,
     });
-    const channelArrays = channels.map((c) =>
-        c.dataValues.channel_actions.map((a) => a.dataValues.channelId)
-    );
-    return new Set(channelArrays.flat(1));
+    let channelArray = [];
+    channels.forEach((c) => {
+        const restrictions = JSON.parse(c.dataValues.restrictions);
+        const channelRestriction = restrictions.find((r) => r[0] === "channel");
+        if (
+            channelRestriction &&
+            !channelArray.includes(channelRestriction[1])
+        ) {
+            channelArray.push(channelRestriction[1]);
+        }
+    });
+    return channelArray;
 };
 
 // update a row in the config key/value store
 const updateCooldown = async (update, where, rowExists) => {
     if (rowExists) {
         return Cooldown.update(update, where);
+        og;
     }
     return Cooldown.create(update);
 };
@@ -206,6 +223,7 @@ const getUserAchievements = async (userId) => {
     let achievements = await AchievementLog.findAll({
         where: { userId },
         include: Achievement,
+        order: [["createdAt", "ASC"]],
     });
     // add the holiday achievement in november
     if (moment().month() === 11) {
@@ -280,18 +298,22 @@ const removeTemporaryAchievement = async (achievementId) => {
 };
 
 // get a users total number of characters written
-const getCharactersWritten = async (userId) => {
+const getCharactersWritten = async (userId, guildId) => {
+    const where = {
+        userId,
+        deletedAt: {
+            [Sequelize.Op.eq]: null,
+        },
+    };
+    if (guildId) {
+        where.guildId = guildId;
+    }
     const logs = await RoleplayLog.findAll({
         attributes: [
             [sequelize.fn("min", sequelize.col("updatedAt")), "minDate"],
             [sequelize.fn("sum", sequelize.col("length")), "charactersWritten"],
         ],
-        where: {
-            userId,
-            deletedAt: {
-                [Sequelize.Op.eq]: null,
-            },
-        },
+        where,
         group: [
             sequelize.literal(
                 `to_timestamp(floor((extract('epoch' from "updatedAt") / 840 )) * 840)`
@@ -305,6 +327,18 @@ const getCharactersWritten = async (userId) => {
             minDate: l.dataValues.minDate,
         };
     });
+};
+
+const getGuilds = async (userId) => {
+    const guilds = await RoleplayLog.findAll({
+        attributes: ["guild.guildName"],
+        where: {
+            userId,
+        },
+        include: Guild,
+        group: ["roleplay_log.guildId", "guild.id"],
+    });
+    return guilds.map((g) => g.guild.dataValues.guildName);
 };
 
 // get the value of a specific counter for a specific user
@@ -342,7 +376,7 @@ const updateCounter = async (type, userId, count) => {
     );
 };
 
-const getActiveRoleplays = async (userId) => {
+const getActiveRoleplays = async (userId, guildId) => {
     const channels = await RoleplayLog.findAll({
         attributes: [
             // [sequelize.fn("distinct", sequelize.col("channelId")), "channelId"],
@@ -352,6 +386,7 @@ const getActiveRoleplays = async (userId) => {
         ],
         where: {
             userId,
+            guildId,
             channelId: {
                 [Sequelize.Op.ne]: null,
             },
@@ -369,12 +404,16 @@ const getActiveRoleplays = async (userId) => {
 };
 
 const getGuildInfo = async (guildId) => {
+    if (guildInfoCache[guildId]) {
+        return guildInfoCache[guildId];
+    }
     const guild = await Guild.findOne({
         where: {
             guildId,
         },
     });
-    return guild?.dataValues;
+    guildInfoCache[guildId] = guild?.dataValues;
+    return guildInfoCache[guildId];
 };
 
 const getAllGuilds = async () => {
@@ -429,6 +468,7 @@ const updateWotd = async (word) => {
             },
         }
     );
+    global.wotd = word;
 };
 
 const getColors = async (guildId) => {
@@ -486,9 +526,95 @@ const updateSticky = async (guildId, channelId, lastMessageId, id) => {
     }
 };
 
+const upsertGuild = async (update) => {
+    let guild = await Guild.findOne({
+        where: {
+            guildId: update.guildId,
+        },
+    });
+    if (guild) {
+        await Guild.update(update, {
+            where: {
+                guildId: update.guildId,
+            },
+        });
+    } else {
+        await Guild.create(update);
+    }
+    guild = await Guild.findOne({
+        where: {
+            guildId: update.guildId,
+        },
+    });
+    guildInfoCache[update.guildId] = guild?.dataValues;
+    console.log(guildInfoCache);
+    return guild?.dataValues;
+};
+
+const upsertRoleplayFilter = async (update) => {
+    let filter = await RoleplayFilter.findOne({
+        where: {
+            discordId: update.discordId,
+        },
+    });
+    if (filter) {
+        await RoleplayFilter.update(update, {
+            where: {
+                discordId: update.discordId,
+            },
+        });
+    } else {
+        await RoleplayFilter.create(update);
+    }
+    if (roleplayFilterCache.length > 0) {
+        roleplayFilterCache = roleplayFilterCache.map((f) => {
+            if (f.discordId === update.discordId) {
+                f.type = update?.type;
+            }
+            return f;
+        });
+    }
+    return true;
+};
+
+const getCharacter = async (userId) => {
+    if (global.characterCache[userId]) {
+        return global.characterCache[userId];
+    }
+    const character = await Character.findOne({
+        where: {
+            userId,
+        },
+    });
+    if (character?.dataValues) {
+        global.characterCache[userId] = character.dataValues;
+    }
+    return character?.dataValues;
+};
+
+const upsertCharacter = async (update) => {
+    let filter = await Character.findOne({
+        where: {
+            userId: update.userId,
+        },
+    });
+    if (filter) {
+        await Character.update(update, {
+            where: {
+                userId: update.userId,
+            },
+        });
+    } else {
+        await Character.create(update);
+    }
+    delete global.characterCache[update.userId];
+    return true;
+};
+
 export {
     createAchievementLog,
     createCounter,
+    createRoleplayFilter,
     createRoleplayLog,
     getAchievement,
     getAchievements,
@@ -496,23 +622,28 @@ export {
     getActiveRoleplays,
     getAllGuilds,
     getCategories,
+    getCharacter,
     getCurrencyLeader,
     getGuildInfo,
     getUserAchievements,
-    getCharacters,
     getCharactersWritten,
     getChannelsToCache,
     getCooldown,
     getCounter,
+    getGuilds,
     getLeaderboard,
     getRoleplayFilters,
     getSticky,
     getWotd,
     getColors,
     removeTemporaryAchievement,
+    removeRoleplayFilter,
     updateCooldown,
     updateCounter,
     updateRoleplayLog,
     updateSticky,
     updateWotd,
+    upsertGuild,
+    upsertCharacter,
+    upsertRoleplayFilter,
 };

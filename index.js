@@ -7,18 +7,18 @@ import { getChannelsToCache, getAllGuilds } from "./dataAccessors.js";
 
 import { messageReactionAdd } from "./handlers/messageReactionAdd.js";
 import { newMessage } from "./handlers/message.js";
-import { messageDelete } from "./handlers/messageDelete.js";
-import { messageUpdate } from "./handlers/messageUpdate.js";
 import { interactionCreate } from "./handlers/interactionCreate.js";
 import { channelCreate } from "./handlers/channelCreate.js";
 import { channelUpdate } from "./handlers/channelUpdate.js";
 import { guildMemberRemove } from "./handlers/guildMemberRemove.js";
 import { guildMemberAdd } from "./handlers/guildMemberAdd.js";
+import { messageDelete } from "./handlers/messageDelete.js";
 
 const pendingBotMessages = [];
 global.wotd = null;
 global.actionsCache = {};
 global.categoryCache = {};
+global.characterCache = {};
 
 // Initiate our Discord client and let the API know the permissions we need.
 const client = new Client({
@@ -48,7 +48,7 @@ process.on("uncaughtException", async (err) => {
                     g.botStatusChannelId
                 );
                 await channel.send(
-                    "**ALERT: Roleplay HQ Bot has experienced a fatal error. Roleplay will not be recorded until the bot comes back online.**"
+                    "**ALERT: Roleplay HQ Bot has experienced a fatal error. Your roleplays will still be recorded.**"
                 );
             }
         })
@@ -81,16 +81,6 @@ client.on("messageCreate", async (msg) => {
     newMessage(msg, client, pendingBotMessages);
 });
 
-// Message deleted
-client.on("messageDelete", async (msg) => {
-    messageDelete(msg, pendingBotMessages);
-});
-
-// Message edited
-client.on("messageUpdate", async (oldMessage, newMessage) => {
-    messageUpdate(oldMessage, newMessage);
-});
-
 // Slash command sent
 client.on("interactionCreate", async (interaction) => {
     interactionCreate(interaction, client);
@@ -110,6 +100,10 @@ client.on("guildMemberRemove", async (member) => {
 
 client.on("guildMemberAdd", async (member) => {
     guildMemberAdd(member, client);
+});
+
+client.on("messageDelete", async (message) => {
+    messageDelete(message);
 });
 
 // Login as the bot

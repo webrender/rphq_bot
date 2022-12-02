@@ -5,21 +5,27 @@ import {
     ButtonStyle,
 } from "discord.js";
 import moment from "moment-timezone";
+import fetch from "node-fetch";
 
 import {
     findCategory,
     switchActiveAchievement,
     generateLeaderboard,
     removeColors,
+    getWebhook,
 } from "../logic.js";
 import {
     getAchievements,
     getUserAchievements,
+    getCharacter,
     getCharactersWritten,
     getActiveRoleplays,
     getColors,
     getCategories,
     getGuildInfo,
+    getGuilds,
+    getRoleplayFilters,
+    upsertCharacter,
 } from "../dataAccessors.js";
 
 const interactionCreate = async (interaction, client) => {
@@ -46,6 +52,12 @@ const interactionCreate = async (interaction, client) => {
             case "color":
                 colorHandler(interaction, client);
                 break;
+            case "m":
+                messageHandler(interaction, client);
+                break;
+            case "mc":
+                messageConfigHandler(interaction, client);
+                break;
         }
     } else if (interaction.isButton()) {
         if (interaction.customId.includes("color")) {
@@ -61,6 +73,8 @@ const interactionCreate = async (interaction, client) => {
 const leadersHandler = async (interaction, client) => {
     let string = `Today's`;
     const boardResponse = await interaction.options.get("board");
+    let ephemeral = await interaction.options.get("private")?.value;
+    await interaction.deferReply({ ephemeral });
     switch (boardResponse.value) {
         case "hour":
             string = `Half-day's`;
@@ -88,25 +102,37 @@ const leadersHandler = async (interaction, client) => {
             break;
     }
     // pull the data and return the generated leaderboard
-    const response = await generateLeaderboard(
+    const content = await generateLeaderboard(
         interaction.user.username,
         string,
         boardResponse.value,
-        client
+        client,
+        interaction.guildId
     );
-    interaction.reply(response);
+    interaction.editReply({
+        ephemeral,
+        content,
+    });
 };
 
 const profileHandler = async (interaction, client) => {
+    let ephemeral = await interaction.options.get("private")?.value;
+    await interaction.deferReply({ ephemeral });
     let user = await interaction.options.get("user");
     if (!user) {
         user = interaction.user;
     } else {
         user = user.user;
     }
-    const cw = await getCharactersWritten(user.id);
-    // console.log("CW:", cw);
+    const cw = await getCharactersWritten(user.id, interaction.guildId);
+    const gcw = await getCharactersWritten(user.id);
+    const guilds = await getGuilds(user.id);
+    const filteredGuilds = guilds.filter((g) => g !== interaction.guild.name);
     const cwsum = cw.reduce((sum, a) => sum + parseInt(a.charactersWritten), 0);
+    const gcwsum = gcw.reduce(
+        (sum, a) => sum + parseInt(a.charactersWritten),
+        0
+    );
     const cwsumMonth = cw.reduce((sum, a) => {
         const monthsAgo = moment.duration(moment().diff(a.minDate)).asMonths();
         if (monthsAgo <= 1) {
@@ -114,7 +140,15 @@ const profileHandler = async (interaction, client) => {
         }
         return sum;
     }, 0);
+    const gcwsumMonth = gcw.reduce((sum, a) => {
+        const monthsAgo = moment.duration(moment().diff(a.minDate)).asMonths();
+        if (monthsAgo <= 1) {
+            return sum + parseInt(a.charactersWritten);
+        }
+        return sum;
+    }, 0);
     const cwavg = cwsum / (cw.length || 0);
+    const gcwavg = gcwsum / (gcw.length || 0);
     const achievementResponse = await getUserAchievements(user.id);
     const achievements = achievementResponse.map((a) => a.dataValues);
     // build the achievements string
@@ -128,9 +162,10 @@ const profileHandler = async (interaction, client) => {
     );
     const guild = await client.guilds.fetch(interaction.guildId);
     const member = await guild.members.fetch(user.id);
-    const allRoleplays = await getActiveRoleplays(user.id);
+    const allRoleplays = await getActiveRoleplays(user.id, interaction.guildId);
     const allChannels = await guild.channels.fetch();
     const allThreads = await guild.channels.fetchActiveThreads();
+    const roleplayFilters = await getRoleplayFilters();
     const roleplayFilter = [];
     const oneOnOnes = [];
     const groups = [];
@@ -195,9 +230,23 @@ const profileHandler = async (interaction, client) => {
     const filteredOneOnOnes = [];
     const filteredGroups = [];
     const filteredStarters = [];
-    allRoleplays.forEach((c) => {
-        if (starters.find((ch) => ch.id === c.channelId)) {
-            filteredStarters.push(c);
+    const g = await getGuildInfo(interaction.guildId);
+    allThreads.threads.forEach((thread) => {
+        if (
+            thread.ownerId === user.id &&
+            starterCategories.find((c) => thread.parentId === c.categoryId)
+        ) {
+            const threadFilter = roleplayFilters.find(
+                (f) => f.discordId === thread.id
+            );
+            if (
+                (g.ignoreThreads && threadFilter?.type === "trackthread") ||
+                (!g.ignoreThreads && threadFilter?.type !== "ignorethread")
+            ) {
+                filteredStarters.push({
+                    channelId: thread.id,
+                });
+            }
         }
     });
     const activeRoleplays = allRoleplays.filter((r) => {
@@ -206,16 +255,20 @@ const profileHandler = async (interaction, client) => {
             .asMonths();
         return monthsAgo <= 1;
     });
-    groups.forEach((g) => {
-        if (!g?.id) {
-            console.log(g);
-        }
-    });
     activeRoleplays.forEach((c) => {
         if (oneOnOnes.find((ch) => ch.id === c.channelId)) {
             filteredOneOnOnes.push(c);
-        } else if (groups.find((ch) => ch.id === c.channelId)) {
-            filteredGroups.push(c);
+        } else {
+            const group = groups.find((ch) => ch.id === c.channelId);
+            if (group) {
+                if (
+                    !starterCategories.find(
+                        (s) => s.categoryId === group.parentId
+                    )
+                ) {
+                    filteredGroups.push(c);
+                }
+            }
         }
     });
     //compose the embed
@@ -231,7 +284,9 @@ const profileHandler = async (interaction, client) => {
             ).toLocaleString()} in the last month)
 **Average characters per post:** ${Math.round(
                 cwavg || 0
-            ).toLocaleString()} characters`
+            ).toLocaleString()} characters (${Math.round(
+                gcwavg || 0
+            ).toLocaleString()} globally)`
         )
         .addFields(
             {
@@ -267,10 +322,26 @@ const profileHandler = async (interaction, client) => {
                               .map((c) => `<#${c.channelId}>`)
                               .join(" ")
                         : "*None.*",
+            },
+            {
+                name: "Global character count",
+                value: `${Math.round(
+                    gcwsum
+                ).toLocaleString()} characters (${Math.round(
+                    gcwsumMonth
+                ).toLocaleString()} in the last month)`,
+            },
+            {
+                name: "Also roleplays on:",
+                value: filteredGuilds.length
+                    ? filteredGuilds.join(", ")
+                    : "*None*",
             }
         );
-    interaction.reply({
+    console.log(ephemeral);
+    interaction.editReply({
         embeds: [embed],
+        ephemeral,
     });
 };
 
@@ -294,6 +365,7 @@ const setBadgeHandler = async (interaction, client) => {
 
 const badgeHandler = async (interaction, client, achievementStart) => {
     const achievementRows = await getUserAchievements(interaction.user.id);
+    let interactionData;
     if (achievementRows.length > 0) {
         const achievements = achievementRows.map(
             (a) => a.dataValues.achievement.dataValues
@@ -301,7 +373,8 @@ const badgeHandler = async (interaction, client, achievementStart) => {
         let numButtons = 1;
         const rows = [];
         let currentRow = [];
-        if (!parseInt(achievementStart)) {
+        const achievementStartInt = parseInt(achievementStart);
+        if (!achievementStartInt || achievementStartInt <= 0) {
             currentRow.push(
                 new ButtonBuilder()
                     .setCustomId("badge:none")
@@ -316,15 +389,23 @@ const badgeHandler = async (interaction, client, achievementStart) => {
                     .setLabel("«")
             );
         }
+        console.log(achievementStart, achievements.length);
         for (
-            let i = achievementStart || 0;
-            numButtons <= 25 && achievements[i];
+            let i =
+                achievementStart && achievementStart >= 0
+                    ? achievementStart
+                    : 0;
+            numButtons <= 24 && achievements[i];
             i++
         ) {
             let button = new ButtonBuilder();
-            if (numButtons === 24 && achievements[i + 1]) {
+            if (
+                rows.length === 4 &&
+                currentRow.length === 4 &&
+                achievements[i + 1]
+            ) {
                 button
-                    .setCustomId(`badge:next:${i + 1}`)
+                    .setCustomId(`badge:next:${i}`)
                     .setStyle(ButtonStyle.Primary)
                     .setLabel("»");
             } else {
@@ -346,16 +427,21 @@ const badgeHandler = async (interaction, client, achievementStart) => {
                 currentRow = [];
             }
         }
-        interaction.reply({
+        interactionData = {
             content: "**Please choose the badge you'd like to use:**",
             ephemeral: true,
             components: rows,
-        });
+        };
     } else {
-        interaction.reply({
+        interactionData = {
             content: "*You do not currently have any achievements.*",
             ephemeral: true,
-        });
+        };
+    }
+    if (achievementStart) {
+        interaction.update(interactionData);
+    } else {
+        interaction.reply(interactionData);
     }
 };
 
@@ -423,7 +509,7 @@ const channelHandler = async (interaction) => {
     const channelManager = await interaction.guild.channels;
     const user = await interaction.options.get("user");
     const categories = await getCategories(interaction.guildId);
-    if (subcommand === "roleplay") {
+    if (subcommand === "create") {
         const channelResponse = await interaction.options.get("channel");
         const name = channelResponse.value.replace(" ", "-");
         const categoryCategory = categories
@@ -440,86 +526,19 @@ const channelHandler = async (interaction) => {
             .then((channelCreateResponse) => {
                 console.log("created[");
                 interaction.reply(
-                    `1:1 Roleplay <#${channelCreateResponse?.id}> has been created for <@${user.user.id}>`
+                    `1:1 Roleplay <#${channelCreateResponse?.id}> has been created for <@${user.user.id}>.
+                    
+If your roleplay contains triggers, please begin your channel with a trigger warning.`
                 );
             })
             .catch((e) => {
+                console.log(e);
                 interaction.reply(
                     e?.rawError?.errors?.parent_id?._errors?.[0]?.message ||
+                        e?.rawError?.message ||
                         "Error"
                 );
             });
-    }
-    if (subcommand === "starter") {
-        const typeResponse = await interaction.options.get("category");
-        const type = typeResponse.value;
-        const channelResponse = await interaction.options.get("channel");
-        const name = channelResponse.value.replace(" ", "-");
-        let categoryCategory;
-        if (type === "erotic") {
-            categoryCategory = categories
-                .filter((c) => c.subType === "erotic")
-                .sort(sortCategories);
-        } else if (type === "sol") {
-            categoryCategory = categories
-                .filter((c) => c.subType === "sol")
-                .sort(sortCategories);
-        } else {
-            categoryCategory = categories
-                .filter((c) => c.subType === "fantasy")
-                .sort(sortCategories);
-        }
-        const parent = findCategory(name, categoryCategory);
-        const channelCreateResponse = await channelManager.create({
-            name,
-            parent,
-        });
-        interaction.reply(
-            `RP Starter <#${channelCreateResponse?.id}> has been created for <@${user.user.id}>`
-        );
-    }
-
-    if (subcommand === "move") {
-        const channel = await interaction.options.get("channel");
-        const destinationResponse = await interaction.options.get(
-            "destination"
-        );
-        const destination = destinationResponse.value;
-        let destinationCategories;
-        let destinationString = "";
-        switch (destination) {
-            case "starter":
-                destinationCategories = categories
-                    .filter((c) => c.type === "starter")
-                    .sort(sortCategories);
-                destinationString = "RP Starters";
-                break;
-            case "one_one":
-                destinationCategories = categories
-                    .filter((c) => c.type === "one_one")
-                    .sort(sortCategories);
-                destinationString = "1:1 Roleplay";
-                break;
-            case "inactive":
-            default:
-                destinationCategories = categories
-                    .filter((c) => c.type === "inactive")
-                    .sort(sortCategories);
-                destinationString = "Inactive Roleplay";
-                break;
-        }
-
-        const parent = findCategory(
-            channel.channel.name,
-            destinationCategories
-        );
-        const c = await channelManager.fetch(channel.channel.id);
-        await c.setParent(parent);
-        interaction.reply(
-            `<#${channel.channel.id}> has been moved to ${destinationString}${
-                user ? ` on behalf of <@${user.user.id}>` : ""
-            }.`
-        );
     }
 
     if (subcommand === "archive") {
@@ -548,7 +567,10 @@ const channelHandler = async (interaction) => {
 const colorHandler = async (interaction, client) => {
     const colorObj = {};
     const colors = await getColors(interaction.guildId);
-    const cw = await getCharactersWritten(interaction.user.id);
+    const cw = await getCharactersWritten(
+        interaction.user.id,
+        interaction.guildId
+    );
     const cwsum = cw.reduce((sum, a) => sum + parseInt(a.charactersWritten), 0);
     const sortedColors = colors.sort((a, b) => {
         return a.rank - b.rank;
@@ -594,6 +616,96 @@ const setColorHandler = async (interaction) => {
     interaction.update({
         content: "Color set.",
         components: [],
+    });
+};
+
+const messageHandler = async (interaction) => {
+    const { guildId } = interaction;
+    const guildInfo = await getGuildInfo(guildId);
+    const character = await getCharacter(interaction.user.id);
+    if (!character) {
+        return interaction.reply({
+            content:
+                "You haven't registered a character yet! Use the /mc command first.",
+            ephemeral: true,
+        });
+    }
+    if (!character.name) {
+        return interaction.reply({
+            content:
+                "Your character needs a name! Use the /mc command to specify one.",
+            ephemeral: true,
+        });
+    }
+    const webhook = await getWebhook(
+        interaction.client,
+        guildInfo,
+        interaction.channel,
+        character.name,
+        character.avatar
+    );
+    if (webhook) {
+        webhook
+            .send(await interaction.options.get("message").value)
+            .then(() => {
+                interaction.reply({
+                    content: "Message sent.",
+                    ephemeral: true,
+                });
+            });
+    } else {
+        interaction.reply({
+            content: "Error sending message. Tell Keykey.",
+            ephemeral: true,
+        });
+        console.log(interaction.channel);
+    }
+};
+
+const messageConfigHandler = async (interaction) => {
+    const name = await interaction.options.get("name")?.value;
+    const imageUrl = await interaction.options.get("imageurl")?.value;
+    const imageAttachment = await interaction.options.get("imageattachment")
+        ?.attachment?.url;
+    console.log(name, imageUrl, imageAttachment);
+    if (imageUrl && imageAttachment) {
+        return interaction.reply({
+            content:
+                "Either specify an image URL or an image attachment, not both.",
+            ephemeral: true,
+        });
+    }
+    if (imageUrl) {
+        let image;
+        try {
+            image = await fetch(imageUrl);
+        } catch (e) {
+            console.log(e, imageUrl);
+            return interaction.reply({
+                content: "Image URL invalid.",
+                ephemeral: true,
+            });
+        }
+        if (image?.headers?.get("content-type").substr(0, 5) !== "image") {
+            return interaction.reply({
+                content: "URL is not a valid image.",
+                ephemeral: true,
+            });
+        }
+    }
+    let update = {
+        userId: interaction.user.id,
+    };
+    if (name) {
+        update.name = name;
+    }
+    if (imageAttachment || imageUrl) {
+        update.avatar = imageAttachment || imageUrl;
+    }
+    await upsertCharacter(update);
+    interaction.reply({
+        content: "Avatar updated.",
+        ephemeral: true,
     });
 };
 

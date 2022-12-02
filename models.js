@@ -5,23 +5,17 @@ import { POSTGRES_URI } from "./config.js";
 
 const sequelize = new Sequelize(POSTGRES_URI);
 
-const Character = sequelize.define(
-    "character",
-    {
-        id: { type: Sequelize.INTEGER, primaryKey: true },
-        owner: { type: Sequelize.STRING },
-        trigger: { type: Sequelize.STRING },
-        name: { type: Sequelize.STRING },
-        avatar: { type: Sequelize.STRING },
-    },
-    {
-        freezeTableName: true,
-    }
-);
+const Character = sequelize.define("character", {
+    id: { type: Sequelize.INTEGER, primaryKey: true, autoIncrement: true },
+    userId: { type: Sequelize.STRING },
+    name: { type: Sequelize.STRING },
+    avatar: { type: Sequelize.STRING },
+});
 
 const RoleplayFilter = sequelize.define("roleplay_filter", {
     id: { type: Sequelize.INTEGER, primaryKey: true, autoIncrement: true },
     discordId: { type: Sequelize.STRING },
+    guildId: { type: Sequelize.STRING },
     type: { type: Sequelize.STRING },
 });
 
@@ -33,6 +27,7 @@ const RoleplayLog = sequelize.define("roleplay_log", {
     createdAt: { type: Sequelize.DATE },
     deletedAt: { type: Sequelize.DATE },
     channelId: { type: Sequelize.STRING },
+    guildId: { type: Sequelize.STRING },
 });
 
 const Cooldown = sequelize.define("cooldown", {
@@ -86,12 +81,15 @@ const ChannelAction = sequelize.define("channel_action", {
 const Guild = sequelize.define("guild", {
     id: { type: Sequelize.INTEGER, primaryKey: true, autoIncrement: true },
     guildId: { type: Sequelize.STRING },
+    guildName: { type: Sequelize.STRING },
     announceChannelId: { type: Sequelize.STRING },
     createdAt: { type: Sequelize.DATE },
     updatedAt: { type: Sequelize.DATE },
     senpaiRoleId: { type: Sequelize.STRING },
     senpaiMuteRoleId: { type: Sequelize.STRING },
     botStatusChannelId: { type: Sequelize.STRING },
+    banned: { type: Sequelize.BOOLEAN },
+    ignoreThreads: { type: Sequelize.BOOLEAN },
 });
 
 const Wotd = sequelize.define(
@@ -125,7 +123,6 @@ const Category = sequelize.define("category", {
     id: { type: Sequelize.INTEGER, primaryKey: true, autoIncrement: true },
     categoryId: { type: Sequelize.STRING },
     type: { type: Sequelize.STRING },
-    subType: { type: Sequelize.STRING },
     start: { type: Sequelize.STRING },
     guildId: { type: Sequelize.STRING },
     createdAt: { type: Sequelize.DATE },
@@ -144,6 +141,11 @@ const StickyMessage = sequelize.define(
         timestamps: false,
     }
 );
+
+RoleplayLog.hasOne(Guild, {
+    foreignKey: "guildId",
+    sourceKey: "guildId",
+});
 
 Action.hasMany(ChannelAction, {
     foreignKey: "actionId",

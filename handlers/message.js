@@ -1,19 +1,20 @@
 import moment from "moment-timezone";
+import { EmbedBuilder } from "discord.js";
 import {
-    createRoleplayLog,
     getCharactersWritten,
     getAllGuilds,
     getGuildInfo,
     getActions,
+    getAchievements,
 } from "../dataAccessors.js";
 import {
     hasRoleplay,
-    stripTupperReplies,
     getUids,
     getWebhook,
     updateColor,
     checkRestrictions,
     doReactions,
+    grantAchievement,
 } from "../logic.js";
 
 const newMessage = async (message, client, pendingBotMessages) => {
@@ -24,11 +25,13 @@ const newMessage = async (message, client, pendingBotMessages) => {
         const text = message.content.trim();
         // see if this is a message in a roleplay channel
         const isRoleplay = await hasRoleplay(message);
-
         let roleplayData;
 
         if (isRoleplay) {
-            const cw = await getCharactersWritten(message.author.id);
+            const cw = await getCharactersWritten(
+                message.author.id,
+                message.guildId
+            );
             const cwsum = cw.reduce(
                 (sum, a) => sum + parseInt(a.charactersWritten),
                 0
@@ -49,15 +52,7 @@ const newMessage = async (message, client, pendingBotMessages) => {
                 cwsumMonth,
             };
 
-            if (message.author.bot) {
-                await processRPFromBot(
-                    text,
-                    message,
-                    client,
-                    pendingBotMessages
-                );
-            } else {
-                await processRPFromUser(text, message, client);
+            if (!message.author.bot) {
                 await updateColor(
                     message.member,
                     charactersWritten,
@@ -93,10 +88,53 @@ const newMessage = async (message, client, pendingBotMessages) => {
             if (message.content === "clearCache") {
                 global.actionsCache = {};
                 global.categoryCache = {};
+                global.characterCache = {};
             } else {
+                const splitMessage = message.content.split(" ");
+                if (splitMessage[0] === "listAchievements") {
+                    const guildId = splitMessage[1];
+                    if (!isNaN(parseInt(guildId))) {
+                        const achievements = await getAchievements(true);
+                        const achArray = await Promise.all(
+                            achievements.map(async (a) => {
+                                const guild = await client.guilds.fetch(
+                                    guildId
+                                );
+                                const role = await guild.roles.fetch(a.roleId);
+                                return { ...a, name: role.name };
+                            })
+                        );
+                        const str = achArray
+                            .sort((a, b) => (a.name > b.name ? 1 : -1))
+                            .map((a) => `${a.id}: **${a.name}**`);
+                        const embed = new EmbedBuilder()
+                            .setColor("#F1C30E")
+                            .setTitle("Achievements")
+                            .setDescription(
+                                str.length > 0 ? str.join("\n") : ""
+                            );
+                        message.reply({ embeds: [embed] });
+                    }
+                } else if (splitMessage[0] === "grantAchievement") {
+                    const guildId = splitMessage[1];
+                    const userId = splitMessage[2];
+                    const achievementId = splitMessage[3];
+                    if (
+                        !isNaN(guildId) &&
+                        !isNaN(userId) &&
+                        !isNaN(achievementId)
+                    ) {
+                        await grantAchievement(
+                            achievementId,
+                            { id: userId },
+                            guildId,
+                            message.client
+                        );
+                    }
+                }
                 // this replicates tupper-like functionality to post messages on behalf of the bot
-                if (!isNaN(parseInt(message.content.split(" ")[0]))) {
-                    const channelId = message.content.split(" ")[0];
+                else if (!isNaN(parseInt(splitMessage[0]))) {
+                    const channelId = splitMessage[0];
                     const channel = await client.channels.fetch(channelId);
                     const { guildId } = channel;
                     const guildInfo = await getGuildInfo(guildId);
@@ -105,7 +143,7 @@ const newMessage = async (message, client, pendingBotMessages) => {
                         guildInfo,
                         channel
                     );
-                    const msg = message.content.split(" ").splice(1).join(" ");
+                    const msg = splitMessage.splice(1).join(" ");
                     webhook.send(msg).then(() => {
                         message.reply({
                             content: "Echo sent.",
@@ -127,40 +165,6 @@ const newMessage = async (message, client, pendingBotMessages) => {
             }
         }
         return;
-    }
-};
-
-const processRPFromBot = async (
-    trimmedText,
-    message,
-    client,
-    pendingBotMessages
-) => {
-    const text = stripTupperReplies(trimmedText);
-    pendingBotMessages.push({
-        id: message.id,
-        text,
-        timestamp: moment().unix(),
-    });
-};
-
-const processRPFromUser = async (trimmedText, message) => {
-    // tupperbox splits messages at 1997 characters to deal with the nitro limit
-    // and so will we
-    const stringArray = trimmedText.match(/[\s\S]{1,1997}/g);
-    if (stringArray) {
-        await Promise.all(
-            stringArray.map(async (s) => {
-                // write each snippet to the DB
-                createRoleplayLog({
-                    messageId: message.id,
-                    userId: message.author.id,
-                    length: s.length,
-                    createdAt: moment(message.createdTimestamp).utc(),
-                    channelId: message.channelId,
-                });
-            })
-        );
     }
 };
 

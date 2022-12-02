@@ -2,6 +2,7 @@ import { EmbedBuilder, PermissionsBitField } from "discord.js";
 import got from "got";
 import cheerio from "cheerio";
 import moment from "moment-timezone";
+import { LOCALE } from "./config.js";
 
 import {
     getCategories,
@@ -21,6 +22,7 @@ import {
     getCounter,
     createCounter,
     updateCounter,
+    createRoleplayLog,
 } from "./dataAccessors.js";
 import { CLIENT_ID } from "./config.js";
 
@@ -74,11 +76,14 @@ const chunkMessage = (msg) => {
 };
 
 // gets or creates a webhook for sending a tupper-style message
-const getWebhook = async (client, guildInfo, ch) => {
+const getWebhook = async (client, guildInfo, ch, n, a) => {
     const guild = await client.guilds.fetch(guildInfo.guildId);
     const channel =
         ch || (await guild.channels.fetch(guildInfo.announceChannelId));
     // get the webhooks for this channel
+    if (!channel.fetchWebhooks) {
+        return false;
+    }
     const webhooks = await channel.fetchWebhooks();
     const webhooksArray = [...webhooks];
     // find the webhook that belongs to us and return it
@@ -86,15 +91,23 @@ const getWebhook = async (client, guildInfo, ch) => {
         (webhook) => webhook[1].owner.id === client.user.id
     );
     console.log("ourWebhook");
+    const botClient = await client.users.cache.get(CLIENT_ID);
+    const name = n || "Roleplay HQ Bot";
+    const avatar =
+        a === undefined
+            ? `https://cdn.discordapp.com/avatars/${botClient.id}/${botClient.avatar}.png`
+            : a;
     if (ourWebhook) {
+        await ourWebhook[1].edit({
+            name,
+            avatar,
+        });
         return ourWebhook[1];
     } else {
         // if there's no webhook yet, create one
-        const botClient = await client.users.cache.get(CLIENT_ID);
-        const avatar = `https://cdn.discordapp.com/avatars/${botClient.id}/${botClient.avatar}.png`;
         return channel
             .createWebhook({
-                name: "Roleplay HQ Bot",
+                name,
                 avatar,
             })
             .then((webhook) => {
@@ -107,14 +120,24 @@ const getWebhook = async (client, guildInfo, ch) => {
 const hasRoleplay = async (message) => {
     // get the list of roleplay filters and see if a given message is in that channel/category
     const roleplayFilters = await getRoleplayFilters();
-    let channel = message.channelId;
+    const g = await getGuildInfo(message.channel.guild.id);
+    let channel = message.channel.id;
     let parent = message.channel.parentId;
-    if (
-        message.type === "GUILD_PUBLIC_THREAD" ||
-        message.type === "GUILD_PRIVATE_THREAD"
-    ) {
+    if (message.channel.isThread()) {
+        const threadFilter = roleplayFilters.find(
+            (f) => channel === f.discordId
+        );
+        if (
+            (g.ignoreThreads && threadFilter?.type !== "trackthread") ||
+            (!g.ignoreThreads && threadFilter?.type === "ignorethread")
+        ) {
+            return false;
+        }
         channel = message.channel.parentId;
-        parent = message.channel.parent.parentId;
+        parent = message.channel?.parent?.parentId;
+        if (!parent) {
+            console.log("MISSING", message);
+        }
     }
     const hasFilter = roleplayFilters.find((f) => {
         return channel == f.discordId || parent == f.discordId;
@@ -122,10 +145,19 @@ const hasRoleplay = async (message) => {
     return Boolean(hasFilter);
 };
 
+const isStarter = async (message) => {
+    const categories = await getCategories(message.guildId);
+    const starterCategories = categories.filter((c) => c.type === "starter");
+    const isStarter = starterCategories.find(
+        (c) => c.categoryId === message.parent.id
+    );
+    return Boolean(isStarter);
+};
+
 // generates the leaderboard string
-const generateLeaderboard = async (username, label, type, client) => {
+const generateLeaderboard = async (username, label, type, client, guildId) => {
     // get the list of leaders from the database
-    const leaders = await getLeaderboard(type);
+    const leaders = await getLeaderboard(type, guildId);
     // take the list of leader IDs, and transform it into an array of strings:
     // 01 Username 1234
     // then take the array and turn it into a single string, with values separated
@@ -134,7 +166,7 @@ const generateLeaderboard = async (username, label, type, client) => {
         leaders.map(async (l) => {
             const userId = l.dataValues.userId;
             const length = l.dataValues.totalLength;
-            const user = await client.users.cache.get(userId);
+            const user = await client.users.fetch(userId);
             if (!user?.username) {
                 return;
             }
@@ -172,7 +204,10 @@ const stripTupperReplies = (text) => {
         // remove the quote
         textArray.splice(0, 1);
         // check if the second line is an at-tag - tupper does this
-        if (textArray[0].substring(0, 2) === "<@") {
+        if (
+            textArray[0].substring(0, 1) === "@" &&
+            textArray[0].includes("[jump]")
+        ) {
             // remove the second line
             textArray.splice(0, 1);
         }
@@ -218,7 +253,9 @@ const switchActiveAchievement = async (
         }
     });
     // add the achievement role
-    await member.roles.add(thisRole.roleId);
+    if (thisRole) {
+        await member.roles.add(thisRole.roleId);
+    }
 };
 
 // grants a user an achievement
@@ -319,6 +356,7 @@ const checkRestrictions = async (checkData) => {
     }
     for (const restriction of checkData.restrictions) {
         const restrictionType = restriction[0];
+
         if (restrictionType === "userId") {
             if (checkData.member.user.id !== restriction[1]) {
                 return false;
@@ -377,6 +415,12 @@ const checkRestrictions = async (checkData) => {
 
         if (restrictionType === "isRoleplay") {
             if (!checkData.roleplayData) {
+                return false;
+            }
+        }
+
+        if (restrictionType === "isNotRoleplay") {
+            if (checkData.roleplayData) {
                 return false;
             }
         }
@@ -458,8 +502,15 @@ const checkRestrictions = async (checkData) => {
             }
         }
         if (restrictionType === "containsWotd") {
-            if (!global.wotd) {
+            const dayOfMonth = moment.tz(LOCALE).format("D");
+            console.log(global.wotdDaySet, dayOfMonth, global.wotd);
+            if (
+                !global.wotd ||
+                !global.wotdDaySet ||
+                global.wotdDaySet !== dayOfMonth
+            ) {
                 global.wotd = await getWotd();
+                global.wotdDaySet = dayOfMonth;
             }
             if (
                 !checkData.object.message.content
@@ -489,9 +540,20 @@ const checkRestrictions = async (checkData) => {
                 restriction[1],
                 checkData.object.message.author.id
             );
+            if (counter && parseInt(counter.count) < parseInt(restriction[2])) {
+                return false;
+            }
+        }
+        if (
+            restrictionType === "userOnServer" ||
+            restrictionType === "userNotOnServer"
+        ) {
+            const userCheck = await checkData.object.message.guild.members
+                .fetch(restriction[1])
+                .catch(() => console.log("paradise lost"));
             if (
-                counter &&
-                parseInt(counter.count) !== parseInt(restriction[2])
+                (!userCheck && restrictionType === "userOnServer") ||
+                (userCheck && restrictionType === "userNotOnServer")
             ) {
                 return false;
             }
@@ -508,6 +570,9 @@ const msgReplace = async (message, payload) => {
     if (msg.includes("$user")) {
         msg = msg.replaceAll("$user", `${payload.member.user}`);
     }
+    if (msg.includes("$channel")) {
+        msg = msg.replaceAll("$channel", `${payload.message.channel}`);
+    }
     if (msg.includes("$wotd")) {
         const { word, definition } = await getWordOfTheDay();
         await updateWotd(word);
@@ -516,6 +581,9 @@ const msgReplace = async (message, payload) => {
             `Word of the Day: **${word}**
 ${definition}*`
         );
+    }
+    if (msg.includes("$message")) {
+        msg = msg.replaceAll("$message", payload.message.content);
     }
     msg = msg.replaceAll(
         "\\n",
@@ -531,10 +599,13 @@ const composeMsg = async (reaction, payload) => {
     if (reaction[3] || reaction[4]) {
         try {
             const value = await msgReplace(reaction[4], payload);
-            const fields = new EmbedBuilder().setColor("#3ad071").addFields({
-                name: reaction[3],
-                value,
-            });
+            const name = await msgReplace(reaction[3], payload);
+            const fields = new EmbedBuilder()
+                .setColor(reaction[5] || "#3ad071")
+                .addFields({
+                    name,
+                    value,
+                });
             embeds.push(fields);
         } catch (e) {
             console.log("error", e);
@@ -628,7 +699,11 @@ const doReactions = async (payload) => {
         }
         if (reactionType === "assignAward") {
             if (reaction[1] === "leader") {
-                const leaders = await getLeaderboard(reaction[2], 3);
+                const leaders = await getLeaderboard(
+                    reaction[2],
+                    payload.guildId,
+                    3
+                );
                 const user = await guild.members.fetch(
                     leaders[reaction[3]].dataValues.userId
                 );
@@ -704,6 +779,21 @@ const doReactions = async (payload) => {
                 );
             }
         }
+        if (reactionType === "log") {
+            console.log(reaction[1]);
+        }
+        if (reactionType === "removeMessages") {
+            const channel = await guild.channels.fetch(reaction[1]);
+            const messages = await channel.messages.fetch({ limit: 100 });
+            messages.forEach((m) => {
+                if (m.content.includes(reaction[2])) {
+                    m.delete();
+                }
+            });
+        }
+        if (reactionType === "deleteMessage") {
+            payload.message.delete();
+        }
     }
 };
 
@@ -744,6 +834,41 @@ const updateColor = async (member, cw, guildId) => {
     }
 };
 
+const processRPFromBot = async (
+    trimmedText,
+    message,
+    client,
+    pendingBotMessages
+) => {
+    const text = stripTupperReplies(trimmedText);
+    pendingBotMessages.push({
+        id: message.id,
+        text,
+        timestamp: moment().unix(),
+    });
+};
+
+const processRPFromUser = async (trimmedText, message) => {
+    // tupperbox splits messages at 1997 characters to deal with the nitro limit
+    // and so will we
+    const stringArray = trimmedText.match(/[\s\S]{1,1997}/g);
+    if (stringArray) {
+        await Promise.all(
+            stringArray.map(async (s) => {
+                // write each snippet to the DB
+                createRoleplayLog({
+                    messageId: message.id,
+                    userId: message.author.id,
+                    length: s.length,
+                    createdAt: moment(message.createdTimestamp).utc(),
+                    channelId: message.channelId,
+                    guildId: message.guildId,
+                });
+            })
+        );
+    }
+};
+
 export {
     chunkMessage,
     findCategory,
@@ -759,4 +884,7 @@ export {
     doReactions,
     updateColor,
     removeColors,
+    isStarter,
+    processRPFromBot,
+    processRPFromUser,
 };
