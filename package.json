@@ -31,7 +31,8 @@
     "nodemonConfig": {
         "ignore": [
             "utilities/*",
-            "leaderboard_bot/*"
+            "leaderboard_bot/*",
+            "discordia/*"
         ],
         "delay": 2000
     }

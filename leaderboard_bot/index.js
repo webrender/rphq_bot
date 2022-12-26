@@ -182,7 +182,6 @@ client.on("guildCreate", async (guild) => {
         guild.leave();
         return;
     }
-    console.log(guildInfo);
     registerCommands(guild.id);
 });
 
@@ -204,7 +203,6 @@ const registerCommands = async (guildId) => {
             }
         );
 
-        console.log(res);
         console.log("Successfully reloaded application (/) commands.");
     } catch (error) {
         console.error(error);
@@ -517,7 +515,6 @@ const leadersHandler = async (interaction) => {
 const registerHandler = async (interaction) => {
     const channel = await interaction.options.get("channelname").channel;
     const guildId = interaction.guild.id;
-    console.log(channel.type);
     const discordId = channel.id;
     const type =
         channel.type === 4 || channel.type === 15 ? "category" : "channel";

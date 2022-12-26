@@ -23,6 +23,7 @@ import {
     createCounter,
     updateCounter,
     createRoleplayLog,
+    crops,
 } from "./dataAccessors.js";
 import { CLIENT_ID } from "./config.js";
 
@@ -90,7 +91,6 @@ const getWebhook = async (client, guildInfo, ch, n, a) => {
     const ourWebhook = webhooksArray.find(
         (webhook) => webhook[1].owner.id === client.user.id
     );
-    console.log("ourWebhook");
     const botClient = await client.users.cache.get(CLIENT_ID);
     const name = n || "Roleplay HQ Bot";
     const avatar =
@@ -135,9 +135,6 @@ const hasRoleplay = async (message) => {
         }
         channel = message.channel.parentId;
         parent = message.channel?.parent?.parentId;
-        if (!parent) {
-            console.log("MISSING", message);
-        }
     }
     const hasFilter = roleplayFilters.find((f) => {
         return channel == f.discordId || parent == f.discordId;
@@ -270,6 +267,7 @@ const grantAchievement = async (
     const logResponse = await createAchievementLog({
         achievementId,
         userId: user.id,
+        guildId: guildId,
     });
 
     if (logResponse !== false || isMedal == true) {
@@ -316,11 +314,8 @@ const findCategory = (channelName, categories) => {
     if (code > 90) {
         return categories.length - 1;
     }
-    console.log(channelName, categories);
     const category = categories.find((c, i) => {
-        // console.log(code, c, categories[i + 1]);
         if (!categories[i + 1]) {
-            // console.log("next missing");
             return true;
         }
         return (
@@ -328,7 +323,6 @@ const findCategory = (channelName, categories) => {
             code < categories[i + 1].start.charCodeAt()
         );
     });
-    // console.log(category);
     return category.categoryId;
 };
 
@@ -373,7 +367,6 @@ const checkRestrictions = async (checkData) => {
             }
         }
         if (restrictionType === "channel") {
-            // console.log(checkData.object.message.channelId, restriction[1]);
             if (checkData.object.message.channelId !== restriction[1]) {
                 return false;
             }
@@ -503,7 +496,6 @@ const checkRestrictions = async (checkData) => {
         }
         if (restrictionType === "containsWotd") {
             const dayOfMonth = moment.tz(LOCALE).format("D");
-            console.log(global.wotdDaySet, dayOfMonth, global.wotd);
             if (
                 !global.wotd ||
                 !global.wotdDaySet ||
@@ -684,13 +676,14 @@ const doReactions = async (payload) => {
                         `DM to ${payload.member.user} sent successfully.`
                     );
                 } catch (e) {
-                    console.log(e);
                     /* no catch */
                 }
             } catch (e2) {
                 try {
                     await payload.reactionBy.send(
-                        `ERROR! DM could not be sent to ${payload.member.user}.`
+                        payload.member
+                            ? `ERROR! DM could not be sent to ${payload.member.user}.`
+                            : `ERROR! User is no longer on the server.`
                     );
                 } catch (e3) {
                     /* no catch */
@@ -722,13 +715,20 @@ const doReactions = async (payload) => {
                 let { mentions } = payload;
                 mentions.forEach(async (uid) => {
                     if (payload.message.author.id !== uid) {
-                        const recipient = await guild.members.fetch(uid);
-                        await grantAchievement(
-                            reaction[2],
-                            recipient,
-                            guild.id,
-                            payload.client
-                        );
+                        let recipient;
+                        try {
+                            recipient = await guild.members.fetch(uid);
+                        } catch (e) {
+                            console.log(e);
+                        }
+                        if (recipient) {
+                            await grantAchievement(
+                                reaction[2],
+                                recipient,
+                                guild.id,
+                                payload.client
+                            );
+                        }
                     }
                 });
             } else {
@@ -739,6 +739,7 @@ const doReactions = async (payload) => {
                 } else {
                     recipient = guild.members.fetch(reaction[1]);
                 }
+                console.log("guildid: ", guild.id, reaction[2]);
                 if (recipient) {
                     grantAchievement(
                         reaction[2],
@@ -869,6 +870,24 @@ const processRPFromUser = async (trimmedText, message) => {
     }
 };
 
+const groupGardenData = (gardenData) => {
+    return gardenData.reduce((a, i) => {
+        if (crops.includes(i.itemId)) {
+            const groupedItemIdx = a.findIndex(
+                (x) => x.x === i.x && x.y === i.y && x.itemId === i.itemId
+            );
+            if (groupedItemIdx >= 0) {
+                a[groupedItemIdx].quantity++;
+            } else {
+                a.push(i);
+            }
+        } else {
+            a.push(i);
+        }
+        return a;
+    }, []);
+};
+
 export {
     chunkMessage,
     findCategory,
@@ -887,4 +906,5 @@ export {
     isStarter,
     processRPFromBot,
     processRPFromUser,
+    groupGardenData,
 };

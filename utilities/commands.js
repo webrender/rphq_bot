@@ -7,85 +7,23 @@ import { PermissionFlagsBits, SlashCommandBuilder } from "discord.js";
 const channel = new SlashCommandBuilder()
     .setName("channel")
     .setDescription("Manage roleplay channels")
-    .addSubcommandGroup((subcommandGroup) =>
-        subcommandGroup
-            .setName("create")
-            .setDescription("Create an RP channel")
-            .addSubcommand((subcommand) =>
-                subcommand
-                    .setName("roleplay")
-                    .setDescription("Create a 1:1 RP channel")
-                    .addUserOption((option) =>
-                        option
-                            .setName("user")
-                            .setDescription("The user requesting the channel")
-                            .setRequired(true)
-                    )
-                    .addStringOption((option) =>
-                        option
-                            .setName("channel")
-                            .setDescription(
-                                "Name of the channel (spaces will be replaced with dashes)"
-                            )
-                            .setRequired(true)
-                    )
-            )
-            .addSubcommand((subcommand) =>
-                subcommand
-                    .setName("starter")
-                    .setDescription("Create a RP Starter channel")
-                    .addStringOption((option) =>
-                        option
-                            .setName("category")
-                            .setDescription("RP Starter category")
-                            .setRequired(true)
-                            .addChoices(
-                                { name: "Fantasy", value: "fantasy" },
-                                { name: "Slice of Life", value: "sol" },
-                                { name: "Erotic", value: "erotic" }
-                            )
-                    )
-                    .addUserOption((option) =>
-                        option
-                            .setName("user")
-                            .setDescription("The user requesting the channel")
-                            .setRequired(true)
-                    )
-                    .addStringOption((option) =>
-                        option
-                            .setName("channel")
-                            .setDescription(
-                                "Name of the channel (spaces will be replaced with dashes)"
-                            )
-                            .setRequired(true)
-                    )
-            )
-    )
     .addSubcommand((subcommand) =>
         subcommand
-            .setName("move")
-            .setDescription("Move a channel")
-            .addChannelOption((option) =>
+            .setName("create")
+            .setDescription("Create an RP channel")
+            .addUserOption((option) =>
                 option
-                    .setName("channel")
-                    .setDescription("The channel to move")
+                    .setName("user")
+                    .setDescription("The user requesting the channel")
                     .setRequired(true)
             )
             .addStringOption((option) =>
                 option
-                    .setName("destination")
-                    .setDescription("Where to move the channel")
-                    .setRequired(true)
-                    .addChoices(
-                        { name: "RP Starters", value: "starter" },
-                        { name: "1:1 Roleplay", value: "one_one" },
-                        { name: "Inactive Roleplay", value: "inactive" }
+                    .setName("channel")
+                    .setDescription(
+                        "Name of the channel (spaces will be replaced with dashes)"
                     )
-            )
-            .addUserOption((option) =>
-                option
-                    .setName("user")
-                    .setDescription("The user requesting the operation")
+                    .setRequired(true)
             )
     )
     .addSubcommand((subcommand) =>
@@ -125,6 +63,10 @@ const achievements = new SlashCommandBuilder()
     .setName("achievements")
     .setDescription("List all achievements.");
 
+const openPresents = new SlashCommandBuilder()
+    .setName("openpresents")
+    .setDescription("Open your presents!");
+
 const profile = new SlashCommandBuilder()
     .setName("profile")
     .setDescription("Displays a user's profile.")
@@ -134,6 +76,11 @@ const profile = new SlashCommandBuilder()
             .setDescription(
                 "Which user's profile. Leave empty to see your own."
             )
+    )
+    .addBooleanOption((option) =>
+        option
+            .setName("private")
+            .setDescription("Only shows the profile to you.")
     );
 
 const leaders = new SlashCommandBuilder()
@@ -154,6 +101,11 @@ const leaders = new SlashCommandBuilder()
                 { name: "Last month", value: "pmonth" }
             )
             .setRequired(true)
+    )
+    .addBooleanOption((option) =>
+        option
+            .setName("private")
+            .setDescription("Only shows the leaderboard to you.")
     );
 
 const color = new SlashCommandBuilder()
@@ -167,7 +119,16 @@ const badge = new SlashCommandBuilder()
 channel.setDefaultMemberPermissions(PermissionFlagsBits.BanMembers);
 stick.setDefaultMemberPermissions(0);
 
-const commands = [channel, stick, achievements, badge, profile, leaders, color];
+const commands = [
+    channel,
+    stick,
+    achievements,
+    badge,
+    profile,
+    leaders,
+    color,
+    openPresents,
+];
 
 (async function () {
     const commandJson = [];
@@ -188,7 +149,6 @@ const commands = [channel, stick, achievements, badge, profile, leaders, color];
             }
         );
 
-        console.log(res);
         console.log("Successfully reloaded application (/) commands.");
     } catch (error) {
         console.error(error);

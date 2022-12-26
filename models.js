@@ -58,7 +58,9 @@ const Achievement = sequelize.define("achievement", {
 const AchievementLog = sequelize.define("achievement_log", {
     id: { type: Sequelize.INTEGER, primaryKey: true, autoIncrement: true },
     userId: { type: Sequelize.STRING },
+    guildId: { type: Sequelize.STRING },
     achievementId: { type: Sequelize.INTEGER },
+    opened: { type: Sequelize.BOOLEAN },
     createdAt: { type: Sequelize.DATE },
     updatedAt: { type: Sequelize.DATE },
 });
@@ -142,6 +144,63 @@ const StickyMessage = sequelize.define(
     }
 );
 
+const Discordia = sequelize.define(
+    "discordia_v2",
+    {
+        id: { type: Sequelize.INTEGER, primaryKey: true, autoIncrement: true },
+        userId: { type: Sequelize.STRING },
+        guildId: { type: Sequelize.STRING },
+        itemId: { type: Sequelize.STRING },
+        x: { type: Sequelize.INTEGER },
+        y: { type: Sequelize.INTEGER },
+        quantity: { type: Sequelize.INTEGER },
+        createdAt: { type: Sequelize.DATE },
+        updatedAt: { type: Sequelize.DATE },
+        watered: { type: Sequelize.BOOLEAN },
+    },
+    {
+        freezeTableName: true,
+    }
+);
+
+const DiscordiaTrades = sequelize.define("discordia_v2_trade", {
+    id: { type: Sequelize.INTEGER, primaryKey: true, autoIncrement: true },
+    userId: { type: Sequelize.STRING },
+    guildId: { type: Sequelize.STRING },
+    tradeTarget: { type: Sequelize.STRING },
+    tradeItem: { type: Sequelize.STRING },
+    tradeAmount: { type: Sequelize.STRING },
+    exchangeItem: { type: Sequelize.STRING },
+    exchangeAmount: { type: Sequelize.STRING },
+    createdAt: { type: Sequelize.DATE },
+    updatedAt: { type: Sequelize.DATE },
+});
+
+const DiscordiaMessages = sequelize.define(
+    "discordia_v2_message_log",
+    {
+        id: { type: Sequelize.INTEGER, primaryKey: true, autoIncrement: true },
+        userId: { type: Sequelize.STRING },
+        guildId: { type: Sequelize.STRING },
+        channelId: { type: Sequelize.STRING },
+        messageId: { type: Sequelize.STRING },
+    },
+    {
+        timestamps: false,
+    }
+);
+
+const DiscordiaCharacterCount = sequelize.define(
+    "discordia_v2_character_count",
+    {
+        id: { type: Sequelize.INTEGER, primaryKey: true, autoIncrement: true },
+        json: { type: Sequelize.JSON },
+    },
+    {
+        timestamps: false,
+    }
+);
+
 RoleplayLog.hasOne(Guild, {
     foreignKey: "guildId",
     sourceKey: "guildId",
@@ -173,4 +232,8 @@ export {
     Color,
     Category,
     StickyMessage,
+    Discordia,
+    DiscordiaTrades,
+    DiscordiaMessages,
+    DiscordiaCharacterCount,
 };

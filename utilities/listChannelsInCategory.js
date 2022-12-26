@@ -28,32 +28,15 @@ const client = new Client({
 });
 global.actionsCache = {};
 client.login(BOT_TOKEN);
-const msgArray = [];
-
-const getMessages = async (channel, before) => {
-    const messages = await channel.messages.fetch({
-        limit: 100,
-        before,
-    });
-    if (messages.size > 0) {
-        messages.each((m) => msgArray.push(m));
-        await getMessages(channel, messages.last().id);
-    }
-};
 
 client.on("ready", async () => {
-    const fromChannel = process.argv[2];
-    const forumChannel = process.argv[3];
-    const fromChannelObj = await client.channels.fetch(fromChannel);
-    const forumChannelObj = await client.channels.fetch(forumChannel);
-    await getMessages(fromChannelObj);
-    const messagesReverse = msgArray.reverse();
-    const botClient = await client.users.cache.get(CLIENT_ID);
-    const avatar = `https://cdn.discordapp.com/avatars/${botClient.id}/${botClient.avatar}.png`;
-    const webhook = await forumChannelObj.guild.channels.createWebhook({
-        channel: forumChannelObj.id,
-        name: "Roleplay HQ Bot",
-        avatar,
+    const guildId = process.argv[2];
+    const categoryId = process.argv[3];
+    const guild = await client.guilds.fetch(guildId);
+    const allChannels = await guild.channels.fetch();
+    const channelsInCategory = allChannels.filter((c) => {
+        return c && c.type === 0 && c.parentId === categoryId;
     });
+    console.log(channelsInCategory.map((c) => c.id).join(" "));
     client.destroy();
 });

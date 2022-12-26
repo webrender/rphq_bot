@@ -26,7 +26,9 @@ import {
     getGuilds,
     getRoleplayFilters,
     upsertCharacter,
+    openGifts,
 } from "../dataAccessors.js";
+import { LOCALE } from "../config.js";
 
 const interactionCreate = async (interaction, client) => {
     if (interaction.isCommand()) {
@@ -58,6 +60,9 @@ const interactionCreate = async (interaction, client) => {
             case "mc":
                 messageConfigHandler(interaction, client);
                 break;
+            case "openpresents":
+                openPresentsHandler(interaction, client);
+                break;
         }
     } else if (interaction.isButton()) {
         if (interaction.customId.includes("color")) {
@@ -68,6 +73,36 @@ const interactionCreate = async (interaction, client) => {
         }
     }
     return;
+};
+
+const openPresentsHandler = async (interaction, client) => {
+    if (moment().tz(LOCALE).month() == 11 && moment().tz(LOCALE).date() < 25) {
+        interaction.reply(
+            `You can't open your presents until Christmas, silly! Current time is ${moment()
+                .tz(LOCALE)
+                .format("MMM Do k:mm")} HST`
+        );
+    } else {
+        const openedGifts = await openGifts(
+            interaction.guildId,
+            interaction.user.id
+        );
+        if (openedGifts) {
+            const embeds = openedGifts.map((i) =>
+                new EmbedBuilder()
+                    .setColor("#B11E31")
+                    .setTitle(
+                        `You opened a gift and found **3**${i} for your garden!`
+                    )
+                    .setDescription("Use the /garden command to plant them.")
+            );
+            interaction.reply({
+                embeds,
+            });
+        } else {
+            interaction.reply("You have no unopened gifts!");
+        }
+    }
 };
 
 const leadersHandler = async (interaction, client) => {
@@ -338,7 +373,6 @@ const profileHandler = async (interaction, client) => {
                     : "*None*",
             }
         );
-    console.log(ephemeral);
     interaction.editReply({
         embeds: [embed],
         ephemeral,
@@ -389,7 +423,6 @@ const badgeHandler = async (interaction, client, achievementStart) => {
                     .setLabel("«")
             );
         }
-        console.log(achievementStart, achievements.length);
         for (
             let i =
                 achievementStart && achievementStart >= 0
@@ -515,16 +548,13 @@ const channelHandler = async (interaction) => {
         const categoryCategory = categories
             .filter((c) => c.type === "one_one")
             .sort(sortCategories);
-        console.log(categoryCategory);
         const parent = findCategory(name, categoryCategory);
-        console.log("create", name, parent);
         await channelManager
             .create({
                 name,
                 parent,
             })
             .then((channelCreateResponse) => {
-                console.log("created[");
                 interaction.reply(
                     `1:1 Roleplay <#${channelCreateResponse?.id}> has been created for <@${user.user.id}>.
                     
@@ -658,7 +688,6 @@ const messageHandler = async (interaction) => {
             content: "Error sending message. Tell Keykey.",
             ephemeral: true,
         });
-        console.log(interaction.channel);
     }
 };
 
@@ -667,7 +696,6 @@ const messageConfigHandler = async (interaction) => {
     const imageUrl = await interaction.options.get("imageurl")?.value;
     const imageAttachment = await interaction.options.get("imageattachment")
         ?.attachment?.url;
-    console.log(name, imageUrl, imageAttachment);
     if (imageUrl && imageAttachment) {
         return interaction.reply({
             content:
@@ -680,7 +708,6 @@ const messageConfigHandler = async (interaction) => {
         try {
             image = await fetch(imageUrl);
         } catch (e) {
-            console.log(e, imageUrl);
             return interaction.reply({
                 content: "Image URL invalid.",
                 ephemeral: true,

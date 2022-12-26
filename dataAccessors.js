@@ -18,7 +18,12 @@ import {
     Color,
     Category,
     StickyMessage,
+    Discordia,
+    DiscordiaTrades,
+    DiscordiaMessages,
+    DiscordiaCharacterCount,
 } from "./models.js";
+import { groupGardenData } from "./logic.js";
 import { LOCALE } from "./config.js";
 
 let roleplayFilterCache = [];
@@ -208,7 +213,6 @@ const getChannelsToCache = async () => {
 const updateCooldown = async (update, where, rowExists) => {
     if (rowExists) {
         return Cooldown.update(update, where);
-        og;
     }
     return Cooldown.create(update);
 };
@@ -547,7 +551,6 @@ const upsertGuild = async (update) => {
         },
     });
     guildInfoCache[update.guildId] = guild?.dataValues;
-    console.log(guildInfoCache);
     return guild?.dataValues;
 };
 
@@ -611,11 +614,622 @@ const upsertCharacter = async (update) => {
     return true;
 };
 
+const crops = [
+    "green_apple",
+    "blueberries",
+    "cherries",
+    "corn",
+    "grapes",
+    "lemon",
+    "peach",
+];
+
+const cropEmoji = {
+    green_apple: "🍏",
+    blueberries: "🫐",
+    cherries: "🍒",
+    corn: "🌽",
+    grapes: "🍇",
+    lemon: "🍋",
+    peach: "🍑",
+};
+
+const itemEmoji = { ...cropEmoji, coins: "🪙" };
+
+const getOrCreateGarden = async (guildId, userId, otherUser) => {
+    let gardenItems = await Discordia.findAll({
+        where: {
+            userId,
+            guildId,
+        },
+    });
+    if (!gardenItems.find((i) => i.dataValues.itemId === "house")) {
+        if (!otherUser) {
+            let remainingCrops = [...crops];
+            gardenItems.forEach((i) => {
+                const rcIdx = remainingCrops.findIndex(
+                    (c) => c === i.dataValues.itemId
+                );
+                if (rcIdx >= 0) {
+                    remainingCrops.splice(rcIdx, 1);
+                }
+            });
+            if (remainingCrops.length === 0) {
+                remainingCrops = [...crops];
+            }
+            const res = [
+                { guildId, userId, itemId: "house", x: 3, y: 3 },
+                {
+                    guildId,
+                    userId,
+                    itemId: remainingCrops[
+                        Math.floor(Math.random() * remainingCrops.length)
+                    ],
+                    x: 0,
+                    y: 0,
+                    quantity: 1,
+                },
+                { guildId, userId, itemId: "coins", x: 0, y: 0, quantity: 0 },
+                { guildId, userId, itemId: "water", x: 0, y: 0, quantity: 0 },
+            ];
+            await Discordia.bulkCreate(res, {
+                fields: ["guildId", "userId", "itemId", "x", "y", "quantity"],
+            });
+            gardenItems = gardenItems.map((a) => a.dataValues).concat(res);
+            return {
+                data: gardenItems,
+                newGarden: true,
+            };
+        } else {
+            return false;
+        }
+    } else {
+        return {
+            data: gardenItems.map((a) => a.dataValues),
+        };
+    }
+};
+
+const addToGarden = async (item) => {
+    await Discordia.create(item);
+    const itemToSubtract = await Discordia.findOne({
+        where: {
+            itemId: item.itemId,
+            x: 0,
+            y: 0,
+            guildId: item.guildId,
+            userId: item.userId,
+        },
+        order: [["createdAt", "ASC"]],
+    });
+    if (itemToSubtract) {
+        await itemToSubtract.destroy();
+    }
+};
+
+const buyCrops = async (cropsToBuy) => {
+    await Discordia.bulkCreate(cropsToBuy, {
+        fields: ["guildId", "userId", "itemId", "x", "y", "quantity"],
+    });
+    await Discordia.update(
+        {
+            quantity: Sequelize.literal(`quantity - ${cropsToBuy.length * 10}`),
+        },
+        {
+            where: {
+                itemId: "coins",
+                userId: cropsToBuy[0].userId,
+                guildId: cropsToBuy[0].guildId,
+            },
+        }
+    );
+};
+
+const harvestItems = async (items) => {
+    let idsToDelete = [];
+    let itemsToCreate = [];
+    items.forEach((item) => {
+        const { guildId, userId, itemId, quantity } = item;
+        idsToDelete.push(item.id);
+        for (let i = 1; i < quantity; i++) {
+            itemsToCreate.push({
+                guildId,
+                userId,
+                itemId,
+                x: 0,
+                y: 0,
+                quantity: 1,
+            });
+        }
+    });
+    await Discordia.destroy({
+        where: {
+            id: idsToDelete,
+        },
+    });
+    await Discordia.bulkCreate(itemsToCreate, {
+        fields: ["guildId", "userId", "itemId", "x", "y", "quantity"],
+    });
+};
+
+const waterItems = async (items) => {
+    await Discordia.update(
+        {
+            watered: true,
+        },
+        {
+            where: {
+                id: items.map((i) => i.id),
+            },
+        }
+    );
+    await Discordia.update(
+        {
+            quantity: Sequelize.literal(`quantity - ${items.length}`),
+        },
+        {
+            where: {
+                itemId: "water",
+                userId: items[0].userId,
+                guildId: items[0].guildId,
+            },
+        }
+    );
+};
+
+const growCrops = async () => {
+    // add 1 crop for all crops under qty 6
+    // add a 2nd crop for all crops under stage 6 which are watered
+    // unwater watered crops
+    // reset 3 day old max-growth crops to stage 1
+    // delete harvested crops over 3 days old
+    await Discordia.update(
+        {
+            quantity: Sequelize.literal("quantity + 1"),
+        },
+        {
+            where: {
+                x: { [Sequelize.Op.ne]: 0 },
+                y: { [Sequelize.Op.ne]: 0 },
+                itemId: { [Sequelize.Op.in]: crops },
+                quantity: { [Sequelize.Op.lt]: 6 },
+            },
+        }
+    );
+    await Discordia.update(
+        {
+            quantity: Sequelize.literal("quantity + 1"),
+        },
+        {
+            where: {
+                x: { [Sequelize.Op.ne]: 0 },
+                y: { [Sequelize.Op.ne]: 0 },
+                itemId: { [Sequelize.Op.in]: crops },
+                quantity: { [Sequelize.Op.lt]: 6 },
+                watered: true,
+            },
+        }
+    );
+    await Discordia.update(
+        {
+            watered: false,
+        },
+        {
+            where: {
+                watered: true,
+            },
+        }
+    );
+    await Discordia.update(
+        {
+            quantity: 1,
+        },
+        {
+            where: {
+                x: { [Sequelize.Op.ne]: 0 },
+                y: { [Sequelize.Op.ne]: 0 },
+                itemId: { [Sequelize.Op.in]: crops },
+                updatedAt: {
+                    [Sequelize.Op.lt]: moment().subtract(3, "day").toDate(),
+                },
+            },
+        }
+    );
+    await Discordia.destroy({
+        where: {
+            x: 0,
+            y: 0,
+            itemId: {
+                [Sequelize.Op.in]: crops,
+            },
+            createdAt: {
+                [Sequelize.Op.lte]: moment().subtract(3, "day").toDate(),
+            },
+        },
+    });
+    process.exit();
+};
+
+const sellItems = async (interaction, salePrice, idsToDelete) => {
+    await Discordia.destroy({
+        where: {
+            id: idsToDelete,
+        },
+    });
+    await Discordia.update(
+        {
+            quantity: Sequelize.literal(`quantity + ${salePrice}`),
+        },
+        {
+            where: {
+                itemId: "coins",
+                userId: interaction.user.id,
+                guildId: interaction.guildId,
+            },
+        }
+    );
+};
+
+const upsertTrade = async (interaction) => {
+    let trade = await DiscordiaTrades.findOne({
+        where: {
+            userId: interaction.user.id,
+            guildId: interaction.guildId,
+        },
+    });
+    const [
+        command,
+        tradeTarget,
+        tradeItem,
+        tradeAmount,
+        exchangeItem,
+        exchangeAmount,
+    ] = interaction.customId.split("-");
+    const update = {
+        tradeTarget,
+        tradeItem,
+        tradeAmount,
+        exchangeItem,
+        exchangeAmount,
+    };
+    if (tradeAmount === "all") {
+        const gardenData = await getOrCreateGarden(
+            interaction.guildId,
+            interaction.user.id
+        );
+        const groupedGardenData = groupGardenData(gardenData.data);
+        let tradeItemData = groupedGardenData.find(
+            (i) => i.x == 0 && i.y == 0 && i.itemId === tradeItem
+        );
+        update.tradeAmount = tradeItemData.quantity;
+    }
+    if (trade) {
+        await DiscordiaTrades.update(update, {
+            where: {
+                guildId: interaction.guildId,
+                userId: interaction.user.id,
+            },
+        });
+    } else {
+        update.guildId = interaction.guildId;
+        update.userId = interaction.user.id;
+        await DiscordiaTrades.create(update);
+    }
+    return true;
+};
+
+const getTrade = async (guildId, userId) => {
+    const trade = await DiscordiaTrades.findOne({
+        where: {
+            guildId,
+            userId,
+        },
+    });
+    const gardenData = await getOrCreateGarden(guildId, userId, true);
+    const groupedGardenData = groupGardenData(gardenData.data);
+    if (trade) {
+        const crop = groupedGardenData.find(
+            (i) =>
+                i.x === 0 &&
+                i.y === 0 &&
+                i.itemId === trade.dataValues.tradeItem
+        );
+        if (!crop || crop.quantity < parseInt(trade.dataValues.tradeAmount)) {
+            await DiscordiaTrades.destroy({
+                where: {
+                    guildId,
+                    userId,
+                },
+            });
+            return null;
+        } else {
+            return trade.dataValues;
+        }
+    } else {
+        return null;
+    }
+};
+
+const tradeItems = async (trade, exchangeUser) => {
+    // find the oldest n trade items and reassign the user
+    if (trade.tradeItem !== "nothing") {
+        const tradeItems = await Discordia.findAll({
+            where: {
+                guildId: trade.guildId,
+                userId: trade.userId,
+                itemId: trade.tradeItem,
+                x: 0,
+                y: 0,
+            },
+            limit: trade.tradeAmount,
+            order: [["createdAt", "ASC"]],
+        });
+        if (trade.tradeItem === "coins") {
+            await Discordia.update(
+                {
+                    quantity: Sequelize.literal(
+                        `quantity - ${trade.tradeAmount}`
+                    ),
+                },
+                {
+                    where: {
+                        id: tradeItems[0].dataValues.id,
+                    },
+                }
+            );
+            await Discordia.update(
+                {
+                    quantity: Sequelize.literal(
+                        `quantity + ${trade.tradeAmount}`
+                    ),
+                },
+                {
+                    where: {
+                        guildId: trade.guildId,
+                        userId: exchangeUser,
+                        itemId: "coins",
+                    },
+                }
+            );
+        } else {
+            await Discordia.update(
+                {
+                    userId: exchangeUser,
+                },
+                {
+                    where: {
+                        id: {
+                            [Sequelize.Op.in]: tradeItems.map(
+                                (i) => i.dataValues.id
+                            ),
+                        },
+                    },
+                }
+            );
+        }
+    }
+    // find the oldest n exchange items and reassign the user
+    if (trade.exchangeItem !== "nothing") {
+        const exchangeItems = await Discordia.findAll({
+            where: {
+                guildId: trade.guildId,
+                userId: exchangeUser,
+                itemId: trade.exchangeItem,
+                x: 0,
+                y: 0,
+            },
+            limit: trade.exchangeAmount,
+            order: [["createdAt", "ASC"]],
+        });
+        if (trade.exchangeItem === "coins") {
+            await Discordia.update(
+                {
+                    quantity: Sequelize.literal(
+                        `quantity - ${trade.exchangeAmount}`
+                    ),
+                },
+                {
+                    where: {
+                        id: exchangeItems[0].dataValues.id,
+                    },
+                }
+            );
+            await Discordia.update(
+                {
+                    quantity: Sequelize.literal(
+                        `quantity + ${trade.exchangeAmount}`
+                    ),
+                },
+                {
+                    where: {
+                        guildId: trade.guildId,
+                        userId: trade.userId,
+                        itemId: "coins",
+                    },
+                }
+            );
+        } else {
+            await Discordia.update(
+                {
+                    userId: trade.userId,
+                },
+                {
+                    where: {
+                        id: {
+                            [Sequelize.Op.in]: exchangeItems.map(
+                                (i) => i.dataValues.id
+                            ),
+                        },
+                    },
+                }
+            );
+        }
+    }
+    // delete the trade
+    await DiscordiaTrades.destroy({
+        where: {
+            id: trade.id,
+        },
+    });
+    return true;
+};
+
+const getMessages = async (guildId, userId) => {
+    const messages = await DiscordiaMessages.findAll({
+        where: {
+            guildId,
+            userId,
+        },
+        limit: 5,
+        order: [["id", "DESC"]],
+    });
+    DiscordiaMessages.destroy({
+        where: {
+            id: {
+                [Sequelize.Op.notIn]: messages.map((m) => m.dataValues.id),
+            },
+        },
+    });
+    return messages.map((m) => m.dataValues);
+};
+
+const addMessage = async (guildId, userId, channelId, messageId) => {
+    await DiscordiaMessages.create({
+        guildId,
+        userId,
+        channelId,
+        messageId,
+    });
+};
+
+const getCharacterCounts = async () => {
+    const characterCountData = await DiscordiaCharacterCount.findOne();
+    let characterCounts = {};
+    if (characterCountData) {
+        characterCounts = characterCountData.dataValues.json;
+    }
+    const gardens = await Discordia.findAll({
+        where: {
+            itemId: "house",
+        },
+    });
+    for (const garden of gardens) {
+        const { userId, guildId } = garden.dataValues;
+        if (!characterCounts[guildId]) {
+            characterCounts[guildId] = {};
+        }
+        if (!characterCounts[guildId][userId]) {
+            characterCounts[guildId][userId] = 0;
+        }
+    }
+    return characterCounts;
+};
+
+const updateCharacterCounts = async (characterCountData) => {
+    DiscordiaCharacterCount.update(
+        {
+            json: characterCountData,
+        },
+        {
+            where: {},
+        }
+    );
+};
+
+const increaseWater = async (guildId, userId, numWaterToAdd) => {
+    const currentWater = await Discordia.findOne({
+        where: {
+            guildId,
+            userId,
+            itemId: "water",
+        },
+    });
+    const currentWaterVal = currentWater.dataValues.quantity;
+    if (currentWaterVal < 25) {
+        let updatedValue;
+        if (currentWaterVal + numWaterToAdd > 25) {
+            updatedValue = 25;
+        } else {
+            updatedValue = currentWaterVal + numWaterToAdd;
+        }
+        await Discordia.update(
+            {
+                quantity: updatedValue,
+            },
+            {
+                where: {
+                    guildId,
+                    userId,
+                    itemId: "water",
+                },
+            }
+        );
+    }
+};
+
+const openGifts = async (guildId, userId) => {
+    const unopenedGifts = await AchievementLog.findAll({
+        where: {
+            userId,
+            guildId,
+            achievementId: {
+                [Sequelize.Op.in]: [30, 50],
+            },
+            opened: {
+                [Sequelize.Op.not]: true,
+            },
+        },
+    });
+    if (unopenedGifts.length > 0) {
+        let cropChoices = [...crops];
+        let chosenCrops = [];
+        for (let i = 0; i < unopenedGifts.length; i++) {
+            const rand = Math.floor(Math.random() * cropChoices.length);
+            const itemId = cropChoices[rand];
+            chosenCrops.push(itemEmoji[cropChoices[rand]]);
+            const createObj = {
+                guildId,
+                userId,
+                itemId,
+                x: 0,
+                y: 0,
+                quantity: 1,
+            };
+            cropChoices.pop(rand, 1);
+            await Discordia.bulkCreate([createObj, createObj, createObj], {
+                fields: ["guildId", "userId", "itemId", "x", "y", "quantity"],
+            });
+        }
+        AchievementLog.update(
+            {
+                opened: true,
+            },
+            {
+                where: {
+                    id: {
+                        [Sequelize.Op.in]: unopenedGifts.map(
+                            (i) => i.dataValues.id
+                        ),
+                    },
+                },
+            }
+        );
+        return chosenCrops;
+    } else {
+        return false;
+    }
+};
+
 export {
+    addToGarden,
+    addMessage,
+    buyCrops,
     createAchievementLog,
     createCounter,
     createRoleplayFilter,
     createRoleplayLog,
+    crops,
+    cropEmoji,
     getAchievement,
     getAchievements,
     getActions,
@@ -626,18 +1240,30 @@ export {
     getCurrencyLeader,
     getGuildInfo,
     getUserAchievements,
+    getCharacterCounts,
     getCharactersWritten,
     getChannelsToCache,
     getCooldown,
     getCounter,
     getGuilds,
     getLeaderboard,
+    getMessages,
     getRoleplayFilters,
     getSticky,
     getWotd,
     getColors,
+    getOrCreateGarden,
+    getTrade,
+    growCrops,
+    harvestItems,
+    itemEmoji,
+    increaseWater,
+    openGifts,
     removeTemporaryAchievement,
     removeRoleplayFilter,
+    sellItems,
+    tradeItems,
+    updateCharacterCounts,
     updateCooldown,
     updateCounter,
     updateRoleplayLog,
@@ -646,4 +1272,6 @@ export {
     upsertGuild,
     upsertCharacter,
     upsertRoleplayFilter,
+    upsertTrade,
+    waterItems,
 };
